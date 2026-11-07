@@ -1,4 +1,4 @@
-# @alvinlui-hk/dsh-browser-bridge
+﻿# @alvinlui-hk/dsh-browser-bridge
 
 [中文](#中文) | English
 
@@ -42,7 +42,7 @@ plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge.
 **No git and no npm?** Use the release tarball:
 
 ```
-plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/releases/download/v1.0.1/dsh-browser-bridge-1.0.1.tgz
+plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/releases/latest — download the attached .tgz asset, then `plugin_manager install_bundle <the asset URL>`
 ```
 
 or download the source ZIP (Code → Download ZIP), extract, and install the extracted folder by absolute path.
@@ -114,10 +114,12 @@ plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge.
 **冇 git 又想用 GitHub？** 用 release tarball：
 
 ```
-plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/releases/download/v1.0.1/dsh-browser-bridge-1.0.1.tgz
+plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/releases/latest — download the attached .tgz asset, then `plugin_manager install_bundle <the asset URL>`
 ```
 
 或者用 Code → Download ZIP 下載解壓，再用絕對路徑安裝解壓後嘅資料夾。
+
+**v2.1.0 安全強化**：所有橋接路由而家行喺 DSH 平台嘅 connection 防護欄之後（Host 綁定 loopback、Origin 檢查、瀏覽器登入 cookie）— DNS rebinding、跨站調用同本機進程存取都被擋；命令 ID 改用隨機 token 防偽冒；title 通道加 per-command nonce 防頁面偽造，並保證每個命令單次執行。
 
 ### 插件市場
 
