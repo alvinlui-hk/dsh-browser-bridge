@@ -200,50 +200,53 @@ window.__ModuleLoader__.load({
         }
         return await withFrameQueue(el, async () => {
           const nonce = Math.random().toString(36).slice(2, 12) + Date.now().toString(36)
+          // Capture BEFORE any code runs: the envelope parks its payload in
+          // document.title, so the original must be read first or the
+          // "restore" would restore the payload itself.
+          const originalTitle = getTitle(el)
+          let decoded
+          let relay = null
+          let titleRaw
+          let failure = null
           let direct
           try {
             direct = await el.executeJavaScript(buildEnvelopeCode(nonce, code), false)
           } catch (error) {
-            throw error instanceof Error ? error : new Error(String(error))
+            failure = error instanceof Error ? error : new Error(String(error))
           }
-          if (direct && typeof direct === 'object' && direct.__dshbb === nonce) {
-            if (diag) {
-              diag.path = 'webview'
-              diag.relay = 'direct'
+          if (failure === null && direct && typeof direct === 'object' && direct.__dshbb === nonce) {
+            relay = 'direct'
+            if (direct.error) failure = new Error('page evaluation failed: ' + direct.error)
+            else decoded = direct.value
+          } else if (failure === null) {
+            // This build drops resolved values: the code above already ran once
+            // and parked its payload in document.title — read it back.
+            relay = 'title-channel'
+            const deadline = Date.now() + 2500
+            while (Date.now() < deadline) {
+              titleRaw = getTitle(el)
+              try {
+                decoded = decodeTitlePayload(titleRaw, nonce)
+                failure = null
+              } catch (error) {
+                // A matched payload that fails to decode is definitive.
+                decoded = undefined
+                failure = error
+                break
+              }
+              if (decoded !== undefined) break
+              await sleep(60)
             }
-            if (direct.error) throw new Error('page evaluation failed: ' + direct.error)
-            return direct.value
-          }
-          // This build drops resolved values: the code above already ran once
-          // and parked its payload in document.title — read it back.
-          const originalTitle = getTitle(el)
-          let decoded
-          let titleRaw
-          const deadline = Date.now() + 2500
-          let decodeError = null
-          while (Date.now() < deadline) {
-            titleRaw = getTitle(el)
-            try {
-              decoded = decodeTitlePayload(titleRaw, nonce)
-              decodeError = null
-            } catch (error) {
-              // A matched payload that fails to decode is definitive.
-              decoded = undefined
-              decodeError = error
-              break
-            }
-            if (decoded !== undefined) break
-            await sleep(60)
           }
           const restoreTo = typeof originalTitle === 'string' ? originalTitle : ''
           await el.executeJavaScript(`document.title = ${JSON.stringify(restoreTo)}`, false).catch(() => {})
           if (diag) {
             diag.path = 'webview'
-            diag.relay = 'title-channel'
+            diag.relay = relay
             diag.titleRawHead = typeof titleRaw === 'string' ? titleRaw.slice(0, 60) : String(titleRaw)
             diag.decodedType = typeof decoded
           }
-          if (decodeError !== null) throw decodeError
+          if (failure !== null) throw failure
           if (decoded === undefined) {
             throw new Error(
               `browser-bridge: title relay did not answer; diag=${JSON.stringify(diag ?? {})}`,
