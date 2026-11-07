@@ -877,7 +877,7 @@ export function apply(ctx) {
       const file = join(dir, `browser-${Date.now()}.png`)
       await writeFile(file, buffer)
       ctx.logger.info?.('browser-bridge: saved screenshot to %s (%d bytes)', file, buffer.length)
-      return { file, bytes: buffer.length, summary: `Screenshot saved (${buffer.length} bytes). Read this file as an image to view it.` }
+      return { file, bytes: buffer.length, summary: `Screenshot saved to ${file} (${buffer.length} bytes). Read this file as an image to view it.` }
     },
     presentCall: () => ({ card: 'generic', title: 'Screenshot browser page', kind: 'browser' }),
   })

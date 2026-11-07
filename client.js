@@ -416,14 +416,25 @@ window.__ModuleLoader__.load({
         throw new Error('screenshot requires the desktop app: the Web build embeds pages in an iframe that cannot be captured')
       }
       if (typeof el.capturePage !== 'function') throw new Error('capturePage is not available on this webview')
-      const image = await el.capturePage()
+      // capturePage can hang indefinitely when the app window is minimized or
+      // fully occluded on some Electron builds — race it with a watchdog and
+      // retry once, so the model gets an actionable error instead of silence.
+      const capture = () => Promise.race([
+        el.capturePage(),
+        sleep(25000).then(() => { throw new Error('capturePage did not settle in 25s — keep the DeepSeek Harness window open and visible (not minimized) and retry') }),
+      ])
+      let image = await capture()
       if (image && typeof image.isEmpty === 'function' && image.isEmpty()) {
-        throw new Error('capturePage returned an empty image — the tab is hidden; switch to it in the sidebar and retry')
+        await sleep(800)
+        image = await capture()
+      }
+      if (image && typeof image.isEmpty === 'function' && image.isEmpty()) {
+        throw new Error('capturePage returned an empty image — the tab is hidden or the window is minimized; switch to it in the sidebar and retry')
       }
       if (image && typeof image.getSize === 'function') {
         const size = image.getSize()
         if (!size || size.width <= 1 || size.height <= 1) {
-          throw new Error('capturePage returned a blank image — the tab is hidden; switch to it in the sidebar and retry')
+          throw new Error('capturePage returned a blank image — the tab is hidden or the window is minimized; switch to it in the sidebar and retry')
         }
       }
       const dataUrl = image && typeof image.toDataURL === 'function' ? image.toDataURL() : null
@@ -452,11 +463,10 @@ window.__ModuleLoader__.load({
             const frames = describeFrames()
             matched = frames.find((frame) => origin !== null && frame.url !== null && frame.url.startsWith(origin)) ?? null
           }
-          const frames = describeFrames().map((frame) => frame.id + '=' + (frame.url ?? '?'))
           const note = matched
-            ? `New frame ${matched.id} is live at ${matched.url}.`
+            ? `The new frame is live at ${matched.url}. Run browser_status to get its frame id.`
             : 'The new tab is queued; run browser_status in a moment to see it.'
-          return { summary: `Opened ${target} in a new Sidebar Browser tab. ${note} Frames now: ${frames.join(', ') || '(none mounted)'}` }
+          return { summary: `Opened ${target} in a new Sidebar Browser tab. ${note}` }
         }
         case 'read': {
           const el = findFrame(command.frameId)
