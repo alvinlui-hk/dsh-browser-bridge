@@ -1,0 +1,3 @@
+- insert:
+    - id: browser-bridge
+      name: '@local/dsh-browser-bridge'

@@ -1,0 +1,45 @@
+{
+  "name": "@local/dsh-browser-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Let DeepSeek Harness agents read and control the web page open in the right Sidebar Browser tab (Desktop webview: full read/act/screenshot; Web iframe: same-origin read + navigation).",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "browser",
+    "sidebar",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alvinlui-hk/dsh-browser-bridge.git"
+  },
+  "homepage": "https://github.com/alvinlui-hk/dsh-browser-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/alvinlui-hk/dsh-browser-bridge/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
