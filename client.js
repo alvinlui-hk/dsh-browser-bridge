@@ -12,7 +12,7 @@
  * when same-origin — the browser hard-blocks cross-origin frame access.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-browser-bridge',
+  id: '@alvinlui-hk/dsh-browser-bridge',
   factory(require) {
     const clientId = 'gui-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36)
     const platform = globalThis.dshDesktop?.protocolVersion === 1 ? 'desktop' : 'web'

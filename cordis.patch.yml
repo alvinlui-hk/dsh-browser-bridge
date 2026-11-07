@@ -1,3 +1,3 @@
 - insert:
     - id: browser-bridge
-      name: '@local/dsh-browser-bridge'
+      name: '@alvinlui-hk/dsh-browser-bridge'
