@@ -84,6 +84,18 @@ Then reload the GUI page once (F5) so the client half starts — or toggle the p
 - **桌面版**：Sidebar 用 Electron `<webview>`，可以完整執行 JS、讀 URL／標題、截圖——跨網域都得。
 - **Web 版**（GUI 喺普通瀏覽器開）：Sidebar 係 sandbox `<iframe>`，跨網域頁面**讀唔到、控唔到**——呢個係瀏覽器嘅硬安全邊界，任何插件都繞不過。同源頁面（例如本機 dev server）就完全可用；開分頁／導航兩邊都得。
 
+### Troubleshooting
+
+**`ERR_PNPM_EPERM ... rename ...dsh-browser-bridge` during install** — a previous link/ZIP install left a junction or folder at `node_modules\@local\dsh-browser-bridge` in the profile. Fix: `plugin_manager` remove_bundle first, delete that leftover folder manually (PowerShell: `cmd /c rmdir "<profile>\node_modules\@local\dsh-browser-bridge"` — removes the junction only, never your files), then install again.
+
+**Bridge not connecting** — the client half needs to re-materialize after install/update: toggle the entry off and on (`set_plugin include:browser-bridge` false → true). If still not connected, reload the GUI page (F5).
+
+### 疑難排解
+
+**安裝時 `ERR_PNPM_EPERM ... rename ...dsh-browser-bridge`** — 之前用 link/ZIP 安裝殘留咗 junction 或資料夾喺 profile 嘅 `node_modules\@local\dsh-browser-bridge`。處理：先 `remove_bundle`，再手動刪走嗰個殘留資料夾（PowerShell：`cmd /c rmdir "<profile>\node_modules\@local\dsh-browser-bridge"` — 只會刪 junction，唔會刪到你嘅檔案），然後重新安裝。
+
+**橋接連唔上** — client 半邊喺安裝／更新後要重新 materialize：將條目停用再啟用（`set_plugin include:browser-bridge` false → true）。仲係連唔上就刷新一次 GUI 頁面（F5）。
+
 ### 安裝
 
 **從 GitHub 安裝（推薦）** — 喺 DeepSeek Harness 對話入面叫 agent：
