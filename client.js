@@ -72,7 +72,8 @@ window.__ModuleLoader__.load({
           const url = safe(() => (typeof el.getURL === 'function' ? el.getURL() : undefined))
           base.url = typeof url === 'string' && url.length > 0 ? url.slice(0, 500) : null
           const title = safe(() => (typeof el.getTitle === 'function' ? el.getTitle() : undefined))
-          base.title = typeof title === 'string' && title.length > 0 ? title.slice(0, 500) : null
+          const pollutedTitle = typeof title === 'string' && title.startsWith(TITLE_TAG)
+          base.title = typeof title === 'string' && title.length > 0 && !pollutedTitle ? title.slice(0, 500) : null
           base.scriptable = typeof el.executeJavaScript === 'function'
         } else {
           const doc = safe(() => el.contentDocument)
@@ -202,8 +203,14 @@ window.__ModuleLoader__.load({
           const nonce = Math.random().toString(36).slice(2, 12) + Date.now().toString(36)
           // Capture BEFORE any code runs: the envelope parks its payload in
           // document.title, so the original must be read first or the
-          // "restore" would restore the payload itself.
-          const originalTitle = getTitle(el)
+          // "restore" would restore the payload itself. A title that already
+          // starts with the tag is stale pollution from an older build —
+          // restoring it would just propagate garbage, so it restores ''.
+          const originalTitleRaw = getTitle(el)
+          const originalTitle =
+            typeof originalTitleRaw === 'string' && !originalTitleRaw.startsWith(TITLE_TAG)
+              ? originalTitleRaw
+              : ''
           let decoded
           let relay = null
           let titleRaw
@@ -238,7 +245,7 @@ window.__ModuleLoader__.load({
               await sleep(60)
             }
           }
-          const restoreTo = typeof originalTitle === 'string' ? originalTitle : ''
+          const restoreTo = originalTitle
           await el.executeJavaScript(`document.title = ${JSON.stringify(restoreTo)}`, false).catch(() => {})
           if (diag) {
             diag.path = 'webview'
@@ -284,9 +291,10 @@ window.__ModuleLoader__.load({
   const d = document
   const body = d.body
   const full = body && typeof body.innerText === 'string' ? body.innerText : ''
+  const rawTitle = d.title || ''
   return {
     url: d.location ? String(d.location.href) : null,
-    title: d.title || '',
+    title: rawTitle.startsWith('__dshbb__') ? '' : rawTitle,
     text: full.slice(0, ${maxChars}),
     totalTextLength: full.length,
     readyState: d.readyState,
