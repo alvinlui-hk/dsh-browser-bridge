@@ -38,6 +38,14 @@ After enabling this plugin, the agent gets `browser_*` tools that operate on the
 
 or programmatically: `plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge.git`
 
+**No git on the machine?** Use the release tarball instead (no git required):
+
+```
+plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/releases/download/v1.0.1/dsh-browser-bridge-1.0.1.tgz
+```
+
+or download the source ZIP (Code → Download ZIP), extract, and install the extracted folder by absolute path.
+
 **From a local folder** — Settings → Plugins → install from a local path pointing at this directory, or:
 
 ```
@@ -86,6 +94,14 @@ Then reload the GUI page once (F5) so the client half starts — or toggle the p
 ```
 
 或者直接：`plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge.git`
+
+**部機冇 git？** 改用 release tarball（唔需要 git）：
+
+```
+plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/releases/download/v1.0.1/dsh-browser-bridge-1.0.1.tgz
+```
+
+或者用 Code → Download ZIP 下載解壓，再用絕對路徑安裝解壓後嘅資料夾。
 
 **從本地資料夾安裝** — Settings → Plugins → 從本地路徑安裝呢個目錄；或者：
 

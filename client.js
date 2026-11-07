@@ -264,9 +264,29 @@ window.__ModuleLoader__.load({
   }
   if (!el) return { found: false }
   try { el.scrollIntoView({ block: 'center' }) } catch (e) {}
-  try { el.click() } catch (e) { return { found: true, tag: el.tagName, error: 'click failed: ' + e.message } }
+  let clickError = null
+  try {
+    if (typeof el.click === 'function') {
+      el.click()
+    } else {
+      // SVGElement and other non-HTMLElement nodes have no .click(): fall back
+      // to a full pointer/mouse event sequence at the element's center.
+      const r = el.getBoundingClientRect()
+      const base = { bubbles: true, cancelable: true, composed: true, clientX: Math.round(r.x + r.width / 2), clientY: Math.round(r.y + r.height / 2), button: 0 }
+      const fire = function (type) {
+        let ev
+        try { ev = new PointerEvent(type, Object.assign({}, base, { pointerId: 1, pointerType: 'mouse', isPrimary: true })) }
+        catch (e) { ev = new MouseEvent(type, base) }
+        el.dispatchEvent(ev)
+      }
+      fire('pointerdown'); fire('mousedown'); fire('pointerup'); fire('mouseup')
+      el.dispatchEvent(new MouseEvent('click', base))
+    }
+  } catch (e) { clickError = e && e.message ? e.message : String(e) }
   const rect = el.getBoundingClientRect()
-  return { found: true, tag: el.tagName, id: el.id || undefined, text: (el.textContent || '').trim().slice(0, 120), rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) } }
+  const out = { found: true, tag: el.tagName, id: el.id || undefined, text: (el.textContent || '').trim().slice(0, 120), rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) } }
+  if (clickError) out.error = 'click failed: ' + clickError
+  return out
 })()`
 
     const typeCode = (selector, text, clear, pressEnter) => `(async () => {
