@@ -62,7 +62,7 @@ The index installs the npm package `@alvinlui-hk/dsh-browser-bridge` — no git 
 
 **`ERR_PNPM_EPERM ... rename ...dsh-browser-bridge` during install** — a previous link/ZIP install left a junction or folder at `node_modules\@alvinlui-hk\dsh-browser-bridge` in the profile. Fix: `plugin_manager` remove_bundle first, delete that leftover folder manually (PowerShell: `cmd /c rmdir "<profile>\node_modules\@alvinlui-hk\dsh-browser-bridge"` — removes the junction only, never your files), then install again.
 
-**Bridge not connecting** — the client half needs to re-materialize after install/update: toggle the entry off and on (`set_plugin include:browser-bridge` false → true). If still not connected, reload the GUI page (F5).
+**Bridge not connecting, or it drops out mid-session** — the client half needs to re-materialize after install/update: toggle the entry off and on (`set_plugin include:browser-bridge` false → true). If still not connected, reload the GUI page (F5). From 2.2.1, if the GUI disposes the client on its own, the poll loop re-arms within a second and keeps the same frame ids, so a dropout recovers without a toggle. A deliberate disable still stops it: once the host routes disappear the loop exits and stays stopped.
 
 ### Security notes
 
@@ -139,7 +139,7 @@ https://raw.githubusercontent.com/alvinlui-hk/dsh-plugin-index/main/index.json
 
 **安裝時 `ERR_PNPM_EPERM ... rename ...dsh-browser-bridge`** — 之前用 link/ZIP 安裝殘留咗 junction 或資料夾喺 profile 嘅 `node_modules\@alvinlui-hk\dsh-browser-bridge`。處理：先 `remove_bundle`，再手動刪走嗰個殘留資料夾（PowerShell：`cmd /c rmdir "<profile>\node_modules\@alvinlui-hk\dsh-browser-bridge"` — 只會刪 junction，唔會刪到你嘅檔案），然後重新安裝。
 
-**橋接連唔上** — client 半邊喺安裝／更新後要重新 materialize：將條目停用再啟用（`set_plugin include:browser-bridge` false → true）。仲係連唔上就刷新一次 GUI 頁面（F5）。
+**橋接連唔上，或者用緊用緊斷線** — client 半邊喺安裝／更新後要重新 materialize：將條目停用再啟用（`set_plugin include:browser-bridge` false → true）。仲係連唔上就刷新一次 GUI 頁面（F5）。由 2.2.1 起，如果 GUI 自己 dispose 咗 client，poll loop 一秒內會自己重新掛返，frame id 保持不變，唔使再手動 toggle。刻意停用就仍然會停：host route 消失之後 loop 會退出並停低。
 
 ### 安全說明
 

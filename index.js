@@ -471,7 +471,7 @@ export function apply(ctx) {
       bundle = { bundleFound: false, bundleError: String(error?.message ?? error) }
     }
     return {
-      serverVersion: 5,
+      serverVersion: 6,
       connected: state !== undefined,
       clientVersion: state?.version ?? null,
       clientsAlive: aliveClients().map((client) => ({
@@ -841,8 +841,11 @@ export function apply(ctx) {
     },
     timeoutMs: 30_000,
     async execute(args) {
-      const direction = args.direction === 'up' ? 'up' : args.to === undefined ? 'down' : null
+      const direction = args.direction === 'up' || args.direction === 'down' ? args.direction : null
       const to = args.to === 'top' || args.to === 'bottom' ? args.to : null
+      if (direction !== null && to !== null) {
+        throw new Error('pass either direction (up/down) or to (top/bottom), not both')
+      }
       if (direction === null && to === null) throw new Error('give direction up/down, or to top/bottom')
       const value = await call(
         'scroll',

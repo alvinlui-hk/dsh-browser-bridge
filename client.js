@@ -17,7 +17,24 @@
 window.__ModuleLoader__.load({
   id: '@alvinlui-hk/dsh-browser-bridge',
   factory(require) {
-    const clientId = 'gui-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36)
+    // Identity and frame numbering live on the page, not on this factory
+    // instance. DSH disposes and re-applies the client plugin on its own
+    // (observed after commands complete, and on every toggle), and a fresh
+    // factory must keep the same client id and the same frame ids — otherwise
+    // every id the caller is holding stops resolving.
+    const PAGE_KEY = Symbol.for('dsh-browser-bridge.page')
+    const page = globalThis[PAGE_KEY] ?? (globalThis[PAGE_KEY] = {
+      clientId: 'gui-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36),
+      frameSeq: 0,
+      frameIds: new WeakMap(),
+      // Only the newest factory instance may poll. A disposed instance's loop
+      // sees a newer epoch and exits, so two loops never run at once.
+      epoch: 0,
+      // Set when the host routes 404. A dispose watchdog must not re-arm
+      // after a deliberate disable; the next apply() clears it.
+      hostGone: false,
+    })
+    const clientId = page.clientId
     const platform = globalThis.dshDesktop?.protocolVersion === 1 ? 'desktop' : 'web'
     let cursor = 0
     let lastTargetFrameId = null
@@ -28,14 +45,13 @@ window.__ModuleLoader__.load({
     if (!globalThis[FRAME_QUEUES_KEY]) globalThis[FRAME_QUEUES_KEY] = new WeakMap()
     const frameQueues = globalThis[FRAME_QUEUES_KEY]
 
-    let frameSeq = 0
-    const frameIds = new WeakMap()
+    const frameIds = page.frameIds
 
     const frameIdOf = (el) => {
       let id = frameIds.get(el)
       if (id === undefined) {
-        frameSeq += 1
-        id = 'frame-' + frameSeq
+        page.frameSeq += 1
+        id = 'frame-' + page.frameSeq
         frameIds.set(el, id)
       }
       return id
@@ -663,7 +679,27 @@ window.__ModuleLoader__.load({
           }
           const target = String(args.url ?? '')
           const before = new Set(frameElements().map((el) => frameIdOf(el)))
-          await sidebar.openTab('browser', { params: { url: target } })
+          // openTab has been observed to never settle, which used to pin the
+          // command until the host timed out and the result was lost. Bound it,
+          // and swallow a late rejection so it cannot surface as unhandled.
+          let settled = false
+          const opened = Promise.resolve(sidebar.openTab('browser', { params: { url: target } })).then(
+            (value) => {
+              settled = true
+              return value
+            },
+            (error) => {
+              settled = true
+              throw error
+            },
+          )
+          opened.catch(() => {})
+          await Promise.race([
+            opened,
+            sleep(8000).then(() => {
+              if (!settled) throw new Error('sidebar openTab did not settle within 8s')
+            }),
+          ])
           let origin = null
           try { origin = new URL(target).origin } catch (e) { origin = null }
           const deadline = Date.now() + 4000
@@ -815,37 +851,88 @@ window.__ModuleLoader__.load({
       inject: ['sidebarRight'],
       apply(ctx) {
         ctxRef.sidebarRight = ctx.sidebarRight
-        ctx.effect(
-          () => {
-            let stopped = false
-            let timer
-            const loop = async () => {
-              if (stopped) return
-              let frames = []
-              try {
-                frames = describeFrames()
-                await post('/browser-bridge/state', { clientId, version: 5, platform, frames })
-                const query = '/browser-bridge/poll?clientId=' + encodeURIComponent(clientId) + '&cursor=' + String(cursor)
-                const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) })
-                if (response.ok) {
-                  const body = await response.json().catch(() => undefined)
-                  if (body && typeof body.cursor === 'number') cursor = body.cursor
-                  const commands = Array.isArray(body?.commands) ? body.commands : []
-                  for (const command of commands) {
-                    if (command && typeof command.id === 'string' && typeof command.action === 'string' && typeof command.token === 'string') {
-                      void executeCommand(command)
-                    }
+        // A new apply means the plugin is enabled again.
+        page.hostGone = false
+        // The poll loop must outlive this effect. DSH disposes client plugin
+        // effects on its own — observed right after a command finishes — and
+        // the page then reports nothing until someone toggles the plugin. A
+        // disposed cleanup used to set `stopped` and the loop died with it.
+        // The loop is owned by the page instead. Dispose clears the timer;
+        // a watchdog re-arms it unless a newer factory instance has applied
+        // (epoch bumped) or the host routes are gone (deliberate disable).
+        const LOOP_KEY = Symbol.for('dsh-browser-bridge.loop')
+        const myEpoch = ++page.epoch
+        const stopLoop = (state, message) => {
+          state.alive = false
+          if (state.timer !== undefined) clearTimeout(state.timer)
+          if (globalThis[LOOP_KEY] === state) delete globalThis[LOOP_KEY]
+          if (message) warnOnce(message)
+        }
+        const startLoop = () => {
+          if (page.hostGone || page.epoch !== myEpoch) return
+          const running = globalThis[LOOP_KEY]
+          if (running && running.epoch === myEpoch && running.alive) return
+          // generation changes on every (re)arm, so a loop iteration that was
+          // already awaiting when dispose cleared its timer cannot schedule
+          // another tick afterwards.
+          const generation = (running?.generation ?? 0) + 1
+          const state = { epoch: myEpoch, generation, timer: undefined, alive: true }
+          globalThis[LOOP_KEY] = state
+          const loop = async () => {
+            if (page.epoch !== myEpoch || globalThis[LOOP_KEY] !== state) return
+            let frames = []
+            let stoppedByHost = false
+            try {
+              frames = describeFrames()
+              await post('/browser-bridge/state', { clientId, version: 6, platform, frames })
+              const query = '/browser-bridge/poll?clientId=' + encodeURIComponent(clientId) + '&cursor=' + String(cursor)
+              const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) })
+              // 404 means the host plugin was disabled and its routes are
+              // gone. Stop until a newer apply() (toggle back on) takes over;
+              // do not keep polling a dead host.
+              if (response.status === 404) {
+                stoppedByHost = true
+              } else if (response.ok) {
+                const body = await response.json().catch(() => undefined)
+                if (body && typeof body.cursor === 'number') cursor = body.cursor
+                const commands = Array.isArray(body?.commands) ? body.commands : []
+                for (const command of commands) {
+                  if (command && typeof command.id === 'string' && typeof command.action === 'string' && typeof command.token === 'string') {
+                    void executeCommand(command)
                   }
                 }
-              } catch (error) {
-                warnOnce('bridge loop error: ' + (error instanceof Error ? error.message : String(error)))
               }
-              if (!stopped) timer = setTimeout(loop, frames.length > 0 ? 400 : 1500)
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (message === 'HTTP 404') stoppedByHost = true
+              else warnOnce('bridge loop error: ' + message)
             }
-            void loop()
+            if (stoppedByHost) {
+              page.hostGone = true
+              stopLoop(state, 'host routes gone; poll loop stopped until the plugin is enabled again')
+              return
+            }
+            if (page.epoch !== myEpoch || globalThis[LOOP_KEY] !== state || !state.alive) return
+            state.timer = setTimeout(loop, frames.length > 0 ? 400 : 1500)
+          }
+          void loop()
+        }
+        ctx.effect(
+          () => {
+            startLoop()
             return () => {
-              stopped = true
-              if (timer !== undefined) clearTimeout(timer)
+              const running = globalThis[LOOP_KEY]
+              if (running) {
+                running.alive = false
+                if (running.timer !== undefined) clearTimeout(running.timer)
+              }
+              if (globalThis[LOOP_KEY] === running) delete globalThis[LOOP_KEY]
+              // Re-arm unless a newer instance already owns the page, or the
+              // host routes already 404'd (deliberate disable). startLoop
+              // no-ops in both cases.
+              setTimeout(() => {
+                if (page.epoch === myEpoch) startLoop()
+              }, 400)
             }
           },
           'browser-bridge: client loop',
