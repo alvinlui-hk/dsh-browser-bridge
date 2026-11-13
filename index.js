@@ -475,7 +475,7 @@ export function apply(ctx) {
       bundle = { bundleFound: false, bundleError: String(error?.message ?? error) }
     }
     return {
-      serverVersion: 7,
+      serverVersion: 8,
       connected: state !== undefined,
       clientVersion: state?.version ?? null,
       clientsAlive: aliveClients().map((client) => ({
@@ -868,7 +868,7 @@ export function apply(ctx) {
     name: 'browser_screenshot',
     description:
       'Capture a PNG screenshot of the right Sidebar Browser tab page and save it to a local file. ' +
-      'Desktop app only (Electron webview). Read the returned file path with the image reading tool to see the page visually.',
+      'Desktop app only (Electron webview). The tab must already be on screen: a hidden tab fails immediately and is not focused. A tab whose capture hangs is remembered, so retry it with browser_open instead. Read the returned file path with the image reading tool to see the page visually.',
     parameters: objectSchema({ frameId: frameIdParam }),
     output: {
       schema: objectSchema({

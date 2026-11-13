@@ -27,6 +27,10 @@ window.__ModuleLoader__.load({
       clientId: 'gui-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36),
       frameSeq: 0,
       frameIds: new WeakMap(),
+      // Frames whose capturePage hung after a focus switch. The webview stays
+      // mounted and can report a real box, but Electron never composites it
+      // again. Remember the element so the next screenshot fails immediately.
+      uncapturable: new WeakSet(),
       // Only the newest factory instance may poll. A disposed instance's loop
       // sees a newer epoch and exits, so two loops never run at once.
       epoch: 0,
@@ -34,6 +38,9 @@ window.__ModuleLoader__.load({
       // after a deliberate disable; the next apply() clears it.
       hostGone: false,
     })
+    // A page object created by an older client survives the toggle. Fill in
+    // fields added after it was first created, or the new code crashes.
+    page.uncapturable ??= new WeakSet()
     const clientId = page.clientId
     const platform = globalThis.dshDesktop?.protocolVersion === 1 ? 'desktop' : 'web'
     let cursor = 0
@@ -60,7 +67,19 @@ window.__ModuleLoader__.load({
     const isVisible = (el) => {
       if (!el.isConnected) return false
       const rects = el.getClientRects()
-      return rects.length > 0 && el.offsetWidth > 0 && el.offsetHeight > 0
+      if (rects.length === 0 || el.offsetWidth <= 0 || el.offsetHeight <= 0) return false
+      // A hidden webview can still report its own box. Walk the ancestor chain:
+      // display:none and visibility:hidden are the signals Electron's compositor
+      // actually follows, and neither is visible on the webview rect itself.
+      const view = el.ownerDocument?.defaultView
+      for (let node = el; node instanceof Element; node = node.parentElement) {
+        if (node.hidden || node.getAttribute('aria-hidden') === 'true' || node.hasAttribute('inert')) return false
+        if (view && typeof view.getComputedStyle === 'function') {
+          const style = view.getComputedStyle(node)
+          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false
+        }
+      }
+      return true
     }
 
     const safe = (fn) => {
@@ -521,19 +540,14 @@ window.__ModuleLoader__.load({
         throw new Error('screenshot requires the desktop app: the Web build embeds pages in an iframe that cannot be captured')
       }
       if (typeof el.capturePage !== 'function') throw new Error('capturePage is not available on this webview')
-      // Electron only composites a webview that has a non-zero box. A background
-      // tab stays mounted at 0x0. Focusing it is the supported path. Mutating
-      // ancestor display/visibility used to flash the whole GUI and could leave
-      // the client loop dead, so that fallback is gone.
+      // Electron only composites the webview that is actually painted. A hidden
+      // tab can still report a box, and a tab brought forward by focus can stay
+      // uncapturable afterwards. Fail on either without touching the GUI.
+      if (page.uncapturable.has(el)) {
+        throw new Error('screenshot cannot capture this tab: a previous capturePage never settled after the tab was focused. Open a fresh tab with browser_open instead of retrying this frame')
+      }
       if (!isVisible(el)) {
-        const reveal = await revealFrame(el)
-        if (!isVisible(el)) {
-          throw new Error(
-            'screenshot needs the tab on screen, and focusing it did not reveal the webview. Expand the right Sidebar and switch to that tab, then retry (' +
-              (reveal.notes ?? []).join(',') +
-              ')',
-          )
-        }
+        throw new Error('screenshot needs the tab on screen. This tab is hidden (an ancestor is display:none or visibility:hidden). Switch to it in the right Sidebar and retry; background tabs are not focused automatically')
       }
       return await captureVisible(el)
     }
@@ -546,7 +560,10 @@ window.__ModuleLoader__.load({
           }
           throw error
         }),
-        sleep(12000).then(() => { throw new Error('capturePage did not settle in 12s — keep the DeepSeek Harness window open and visible (not minimized) and retry') }),
+        sleep(4000).then(() => {
+          page.uncapturable.add(el)
+          throw new Error('capturePage did not settle in 4s. This tab is not being composited; open a fresh tab with browser_open instead of retrying this frame')
+        }),
       ])
       let image = await capture()
       if (image && typeof image.isEmpty === 'function' && image.isEmpty()) {
@@ -568,61 +585,6 @@ window.__ModuleLoader__.load({
     }
 
     // ── command execution ──────────────────────────────────────────────────
-
-    /**
-     * The sidebar tab id owning a frame element. DSH keeps background browser
-     * webviews mounted (keepMounted) inside inactive panes, so a frame can be
-     * attached yet off-screen — and Electron refuses to capture those.
-     */
-    // The webview lives in the tab body, which DSH marks with
-    // data-sidebar-right-tab. The strip button uses data-dockkit-tab with the
-    // same id. Either is a valid focus target.
-    const tabIdOf = (el) =>
-      el.closest('[data-sidebar-right-tab]')?.getAttribute('data-sidebar-right-tab')
-      ?? el.closest('[data-dockkit-tab]')?.getAttribute('data-dockkit-tab')
-      ?? null
-
-    /**
-     * Bring a frame's sidebar tab to the front so its webview is on screen.
-     * Returns once the element reports a real box, or after a short budget.
-     */
-    const revealFrame = async (el) => {
-      const tabId = tabIdOf(el)
-      const sidebar = ctxRef.sidebarRight
-      const notes = []
-      if (sidebar && typeof sidebar.isExpanded === 'function' && sidebar.isExpanded() === false && typeof sidebar.toggleExpanded === 'function') {
-        try {
-          sidebar.toggleExpanded()
-          notes.push('expanded')
-        } catch (error) {
-          notes.push('expand-threw:' + (error instanceof Error ? error.message : String(error)))
-        }
-      }
-      if (tabId !== null && sidebar && typeof sidebar.focus === 'function') {
-        try {
-          sidebar.focus(tabId)
-          notes.push('focused')
-        } catch (error) {
-          notes.push('focus-threw:' + (error instanceof Error ? error.message : String(error)))
-        }
-      }
-      if (tabId !== null && !isVisible(el)) {
-        const strip = document.querySelector(`[data-dockkit-tab="${CSS.escape(tabId)}"]`)
-        if (strip) {
-          strip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }))
-          strip.click()
-          notes.push('clicked-strip')
-        } else {
-          notes.push('no-strip')
-        }
-      }
-      const deadline = Date.now() + 2000
-      while (Date.now() < deadline) {
-        if (isVisible(el)) return { revealed: true, notes }
-        await sleep(60)
-      }
-      return { revealed: isVisible(el), notes, tabId }
-    }
 
     const runCommand = async (command) => {
       const args = command.args ?? {}
@@ -852,7 +814,7 @@ window.__ModuleLoader__.load({
             let stoppedByHost = false
             try {
               frames = describeFrames()
-              await post('/browser-bridge/state', { clientId, version: 7, platform, frames })
+              await post('/browser-bridge/state', { clientId, version: 8, platform, frames })
               const query = '/browser-bridge/poll?clientId=' + encodeURIComponent(clientId) + '&cursor=' + String(cursor)
               const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) })
               // 404 means the host plugin was disabled and its routes are
@@ -894,7 +856,7 @@ window.__ModuleLoader__.load({
             }
             post('/browser-bridge/state', {
               clientId,
-              version: 7,
+              version: 8,
               platform,
               frames: safe(() => describeFrames()) ?? [],
             }).catch(() => {})
