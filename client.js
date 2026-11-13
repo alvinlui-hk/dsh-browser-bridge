@@ -522,65 +522,20 @@ window.__ModuleLoader__.load({
       }
       if (typeof el.capturePage !== 'function') throw new Error('capturePage is not available on this webview')
       // Electron only composites a webview that has a non-zero box. A background
-      // tab can stay mounted at 0×0, and a tab from another conversation sits
-      // under a hidden sidebar (display:none), which no child style can escape.
-      // Focus it first; if it is still off-screen, lift the hidden ancestors and
-      // pin the webview for the capture, then put everything back.
+      // tab stays mounted at 0x0. Focusing it is the supported path. Mutating
+      // ancestor display/visibility used to flash the whole GUI and could leave
+      // the client loop dead, so that fallback is gone.
       if (!isVisible(el)) {
-        await revealFrame(el)
-      }
-      const staged = isVisible(el) ? null : stageForCapture(el)
-      try {
-        if (staged) await sleep(450)
-        return await captureVisible(el)
-      } finally {
-        staged?.restore()
-      }
-    }
-
-    // Clear display:none on the ancestor chain, hide that chain's other UI, and
-    // pin the webview over the window. position:fixed is ignored while any
-    // ancestor is display:none, so the hidden conversation sidebar has to be
-    // unhidden for the capture itself.
-    const stageForCapture = (el) => {
-      const restores = []
-      let node = el.parentElement
-      while (node) {
-        const hidden = node.hidden
-        const style = node.getAttribute('style')
-        const computed = getComputedStyle(node)
-        const needsLayout = hidden || computed.display === 'none' || computed.visibility === 'hidden' || computed.contentVisibility === 'hidden'
-        if (needsLayout) {
-          if (hidden) node.hidden = false
-          node.style.setProperty('display', computed.display === 'none' || computed.display === 'contents' ? 'block' : computed.display, 'important')
-          node.style.setProperty('visibility', 'hidden', 'important')
-          node.style.setProperty('content-visibility', 'visible', 'important')
-          restores.push(() => {
-            if (style === null) node.removeAttribute('style')
-            else node.setAttribute('style', style)
-            node.hidden = hidden
-          })
+        const reveal = await revealFrame(el)
+        if (!isVisible(el)) {
+          throw new Error(
+            'screenshot needs the tab on screen, and focusing it did not reveal the webview. Expand the right Sidebar and switch to that tab, then retry (' +
+              (reveal.notes ?? []).join(',') +
+              ')',
+          )
         }
-        if (node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0 && !needsLayout) break
-        node = node.parentElement
       }
-      const previous = el.getAttribute('style')
-      el.style.setProperty('position', 'fixed', 'important')
-      el.style.setProperty('left', '0', 'important')
-      el.style.setProperty('top', '0', 'important')
-      el.style.setProperty('width', '1280px', 'important')
-      el.style.setProperty('height', '800px', 'important')
-      el.style.setProperty('display', 'flex', 'important')
-      el.style.setProperty('visibility', 'visible', 'important')
-      el.style.setProperty('z-index', '2147483646', 'important')
-      el.style.setProperty('pointer-events', 'none', 'important')
-      return {
-        restore() {
-          if (previous === null) el.removeAttribute('style')
-          else el.setAttribute('style', previous)
-          for (const restore of restores.reverse()) restore()
-        },
-      }
+      return await captureVisible(el)
     }
 
     const captureVisible = async (el) => {
@@ -679,10 +634,11 @@ window.__ModuleLoader__.load({
           }
           const target = String(args.url ?? '')
           const before = new Set(frameElements().map((el) => frameIdOf(el)))
-          // openTab has been observed to never settle, which used to pin the
-          // command until the host timed out and the result was lost. Bound it,
-          // and swallow a late rejection so it cannot surface as unhandled.
+          // openTab has been observed to never settle even after the tab exists.
+          // The new frame is the success signal; the promise is only a bound so
+          // a hang cannot pin this command until the host times out.
           let settled = false
+          let openError = null
           const opened = Promise.resolve(sidebar.openTab('browser', { params: { url: target } })).then(
             (value) => {
               settled = true
@@ -690,16 +646,28 @@ window.__ModuleLoader__.load({
             },
             (error) => {
               settled = true
-              throw error
+              openError = error instanceof Error ? error : new Error(String(error))
+              throw openError
             },
           )
           opened.catch(() => {})
-          await Promise.race([
-            opened,
-            sleep(8000).then(() => {
-              if (!settled) throw new Error('sidebar openTab did not settle within 8s')
-            }),
+          const appeared = (async () => {
+            const deadline = Date.now() + 8000
+            while (Date.now() < deadline) {
+              if (frameElements().some((el) => !before.has(frameIdOf(el)))) return true
+              if (openError) throw openError
+              await sleep(200)
+            }
+            return false
+          })()
+          const tabReady = await Promise.race([
+            opened.then(() => true, () => false),
+            appeared,
           ])
+          if (!tabReady && !frameElements().some((el) => !before.has(frameIdOf(el)))) {
+            if (openError) throw openError
+            if (!settled) throw new Error('sidebar openTab did not settle within 8s and no new tab appeared')
+          }
           let origin = null
           try { origin = new URL(target).origin } catch (e) { origin = null }
           const deadline = Date.now() + 4000
@@ -884,7 +852,7 @@ window.__ModuleLoader__.load({
             let stoppedByHost = false
             try {
               frames = describeFrames()
-              await post('/browser-bridge/state', { clientId, version: 6, platform, frames })
+              await post('/browser-bridge/state', { clientId, version: 7, platform, frames })
               const query = '/browser-bridge/poll?clientId=' + encodeURIComponent(clientId) + '&cursor=' + String(cursor)
               const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) })
               // 404 means the host plugin was disabled and its routes are
@@ -916,6 +884,22 @@ window.__ModuleLoader__.load({
             state.timer = setTimeout(loop, frames.length > 0 ? 400 : 1500)
           }
           void loop()
+          // A command (screenshot, wait, open) can outlive several poll beats.
+          // The next beat must not wait for that command, or the host marks the
+          // client stale and every later tool reports "no GUI page".
+          const beat = setInterval(() => {
+            if (page.epoch !== myEpoch || globalThis[LOOP_KEY] !== state || !state.alive || page.hostGone) {
+              clearInterval(beat)
+              return
+            }
+            post('/browser-bridge/state', {
+              clientId,
+              version: 7,
+              platform,
+              frames: safe(() => describeFrames()) ?? [],
+            }).catch(() => {})
+          }, 1500)
+          state.beat = beat
         }
         ctx.effect(
           () => {
@@ -925,6 +909,7 @@ window.__ModuleLoader__.load({
               if (running) {
                 running.alive = false
                 if (running.timer !== undefined) clearTimeout(running.timer)
+                if (running.beat !== undefined) clearInterval(running.beat)
               }
               if (globalThis[LOOP_KEY] === running) delete globalThis[LOOP_KEY]
               // Re-arm unless a newer instance already owns the page, or the

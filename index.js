@@ -123,6 +123,10 @@ export function apply(ctx) {
     const token = randomBytes(12).toString('hex')
     const id = String(++issued)
     const timeoutMs = Math.max(2_000, Number(options.timeoutMs) || DEFAULT_COMMAND_TIMEOUT_MS)
+    // A long command is executed off the poll beat. Without this grace the
+    // 6s freshness window expires mid-command and every later tool reports
+    // "no GUI page" even though the client is still working.
+    target.lastSeen = Date.now() + Math.min(timeoutMs, 45_000)
     const outcome = new Promise((resolve) => {
       const timer = setTimeout(() => {
         pending.delete(token)
@@ -471,7 +475,7 @@ export function apply(ctx) {
       bundle = { bundleFound: false, bundleError: String(error?.message ?? error) }
     }
     return {
-      serverVersion: 6,
+      serverVersion: 7,
       connected: state !== undefined,
       clientVersion: state?.version ?? null,
       clientsAlive: aliveClients().map((client) => ({
@@ -952,7 +956,7 @@ export function apply(ctx) {
       const value = await call(
         'wait',
         { selector, urlIncludes, textIncludes, timeoutMs },
-        { frameId: requireFrameArg(args.frameId), timeoutMs: timeoutMs + 10_000 },
+        { frameId: requireFrameArg(args.frameId), timeoutMs: timeoutMs + 15_000 },
       )
       return {
         matched: value?.matched === true,

@@ -17,7 +17,7 @@ After enabling this plugin, the agent gets `browser_*` tools that operate on the
 | `browser_press` | Send a key to the focused element (Enter, Escape, ArrowDown, …) |
 | `browser_scroll` | Scroll up/down or jump to top/bottom |
 | `browser_wait` | Wait until a selector exists, the URL contains a string, or the page text contains a string |
-| `browser_screenshot` | Save a PNG of the page (Desktop app), including a background tab, then view it with the image tool |
+| `browser_screenshot` | Save a PNG of the page (Desktop app). A background tab is focused first; if it still has no on-screen box the call fails immediately instead of mutating the GUI |
 
 ### How it works
 
@@ -62,7 +62,7 @@ The index installs the npm package `@alvinlui-hk/dsh-browser-bridge` — no git 
 
 **`ERR_PNPM_EPERM ... rename ...dsh-browser-bridge` during install** — a previous link/ZIP install left a junction or folder at `node_modules\@alvinlui-hk\dsh-browser-bridge` in the profile. Fix: `plugin_manager` remove_bundle first, delete that leftover folder manually (PowerShell: `cmd /c rmdir "<profile>\node_modules\@alvinlui-hk\dsh-browser-bridge"` — removes the junction only, never your files), then install again.
 
-**Bridge not connecting, or it drops out mid-session** — the client half needs to re-materialize after install/update: toggle the entry off and on (`set_plugin include:browser-bridge` false → true). If still not connected, reload the GUI page (F5). From 2.2.1, if the GUI disposes the client on its own, the poll loop re-arms within a second and keeps the same frame ids, so a dropout recovers without a toggle. A deliberate disable still stops it: once the host routes disappear the loop exits and stays stopped.
+**Bridge not connecting, or it drops out mid-session** — the client half needs to re-materialize after install/update: toggle the entry off and on (`set_plugin include:browser-bridge` false → true). If still not connected, reload the GUI page (F5). From 2.2.1, if the GUI disposes the client on its own, the poll loop re-arms within a second and keeps the same frame ids, so a dropout recovers without a toggle. From 2.2.2 the client also posts a heartbeat while a long command is running, so a screenshot or wait no longer looks like a disconnect. A deliberate disable still stops it: once the host routes disappear the loop exits and stays stopped.
 
 ### Security notes
 
@@ -90,7 +90,7 @@ The index installs the npm package `@alvinlui-hk/dsh-browser-bridge` — no git 
 | `browser_press` | 向焦點元素發送按鍵（Enter、Escape、方向鍵等） |
 | `browser_scroll` | 上/下捲動，或者直接去頂/去底 |
 | `browser_wait` | 等到 selector 出現、URL 包含指定字串，或者頁面文字包含指定字串 |
-| `browser_screenshot` | 截圖儲存 PNG（桌面版），會先將分頁帶到畫面，再用讀圖工具睇 |
+| `browser_screenshot` | 截圖儲存 PNG（桌面版）。背景分頁會先聚焦；聚焦後仍然冇畫面就即刻報錯，唔再改 GUI 樣式 |
 
 ### 原理
 
@@ -121,7 +121,11 @@ plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/
 
 或者用 Code → Download ZIP 下載解壓，再用絕對路徑安裝解壓後嘅資料夾。
 
-**v2.2.0**：背景分頁都可以截圖——先聚焦，仍然離屏就短暫解除隱藏祖先並固定 webview，擷取後即時還原；`browser_evaluate` 會講出真正嘅 syntax 或頁面錯誤；`browser_open` 回傳新 frame id；新增 `browser_wait`、markdown/HTML 讀取、座標點擊同第幾個匹配。
+**v2.2.2**：長命令（截圖、等待、開分頁）期間 client 會繼續報心跳，host 唔會再當佢斷線；`browser_open` 以新 frame 出現做成功信號，唔再等一個可能永遠唔 settle 嘅 `openTab`；背景截圖唔再改祖先元素樣式，聚焦唔到就即刻報錯。
+
+**v2.2.1**：GUI 自己 dispose client 之後，poll loop 會自動重新掛返，frame id 保持不變；刻意停用仍然會停。
+
+**v2.2.0**：`browser_evaluate` 會講出真正嘅 syntax 或頁面錯誤；`browser_open` 回傳新 frame id；新增 `browser_wait`、markdown/HTML 讀取、座標點擊同第幾個匹配。
 
 **v2.1.0 安全強化**：所有橋接路由而家行喺 DSH 平台嘅 connection 防護欄之後（Host 綁定 loopback、Origin 檢查、瀏覽器登入 cookie）— DNS rebinding、跨站調用同本機進程存取都被擋；命令 ID 改用隨機 token 防偽冒；title 通道加 per-command nonce 防頁面偽造，並保證每個命令單次執行。
 
@@ -139,7 +143,7 @@ https://raw.githubusercontent.com/alvinlui-hk/dsh-plugin-index/main/index.json
 
 **安裝時 `ERR_PNPM_EPERM ... rename ...dsh-browser-bridge`** — 之前用 link/ZIP 安裝殘留咗 junction 或資料夾喺 profile 嘅 `node_modules\@alvinlui-hk\dsh-browser-bridge`。處理：先 `remove_bundle`，再手動刪走嗰個殘留資料夾（PowerShell：`cmd /c rmdir "<profile>\node_modules\@alvinlui-hk\dsh-browser-bridge"` — 只會刪 junction，唔會刪到你嘅檔案），然後重新安裝。
 
-**橋接連唔上，或者用緊用緊斷線** — client 半邊喺安裝／更新後要重新 materialize：將條目停用再啟用（`set_plugin include:browser-bridge` false → true）。仲係連唔上就刷新一次 GUI 頁面（F5）。由 2.2.1 起，如果 GUI 自己 dispose 咗 client，poll loop 一秒內會自己重新掛返，frame id 保持不變，唔使再手動 toggle。刻意停用就仍然會停：host route 消失之後 loop 會退出並停低。
+**橋接連唔上，或者用緊用緊斷線** — client 半邊喺安裝／更新後要重新 materialize：將條目停用再啟用（`set_plugin include:browser-bridge` false → true）。仲係連唔上就刷新一次 GUI 頁面（F5）。由 2.2.1 起，如果 GUI 自己 dispose 咗 client，poll loop 一秒內會自己重新掛返，frame id 保持不變，唔使再手動 toggle。由 2.2.2 起，長命令執行期間 client 會繼續報心跳，截圖或等待唔會再被當成斷線。刻意停用就仍然會停：host route 消失之後 loop 會退出並停低。
 
 ### 安全說明
 

@@ -1,6 +1,6 @@
 {
   "name": "@alvinlui-hk/dsh-browser-bridge",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "type": "module",
   "description": "Let DeepSeek Harness agents read and control the web page open in the right Sidebar Browser tab (Desktop webview: full read/act/screenshot; Web iframe: same-origin read + navigation).",
   "license": "MIT",
