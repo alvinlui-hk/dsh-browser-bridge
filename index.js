@@ -149,6 +149,15 @@ export function apply(ctx) {
     // side failures surface as tool errors.
     const result = await outcome
     if (!result.ok) throw new Error(result.error ?? `command "${action}" failed`)
+    // The client only knows its local frame id. Publish the prefixed id the
+    // other tools accept, and rewrite any summary that quoted the local one.
+    if (result.value && typeof result.value === 'object' && typeof result.value.frameId === 'string' && !result.value.frameId.includes(':')) {
+      const frameId = `${target.prefix}:${result.value.frameId}`
+      const summary = typeof result.value.summary === 'string'
+        ? result.value.summary.split(result.value.frameId).join(frameId)
+        : result.value.summary
+      return { ...result.value, frameId, summary }
+    }
     return result.value
   }
 
@@ -462,7 +471,7 @@ export function apply(ctx) {
       bundle = { bundleFound: false, bundleError: String(error?.message ?? error) }
     }
     return {
-      serverVersion: 4,
+      serverVersion: 5,
       connected: state !== undefined,
       clientVersion: state?.version ?? null,
       clientsAlive: aliveClients().map((client) => ({
@@ -592,6 +601,7 @@ export function apply(ctx) {
       schema: objectSchema({
         opened: { type: 'boolean' },
         url: stringParam('URL that was opened'),
+        frameId: stringParam('frame id of the new tab, once its page has started loading'),
         summary: stringParam('result summary'),
       }, ['opened']),
       render: (_args, value) => text(value?.summary ?? `Opened ${value?.url ?? ''}`),
@@ -608,7 +618,12 @@ export function apply(ctx) {
         throw new Error('url must be an absolute http(s) URL')
       }
       const value = await call('open', { url }, { timeoutMs: 15_000 })
-      return { opened: true, url, summary: value?.summary ?? 'Opened in a new Sidebar Browser tab. Wait a moment, then use browser_read.' }
+      return {
+        opened: true,
+        url,
+        ...(typeof value?.frameId === 'string' && value.frameId.length > 0 ? { frameId: value.frameId } : {}),
+        summary: value?.summary ?? 'Opened in a new Sidebar Browser tab. Wait a moment, then use browser_read.',
+      }
     },
     presentCall: (args) => ({ card: 'generic', title: String(args.url ?? ''), kind: 'browser' }),
   })
@@ -616,11 +631,13 @@ export function apply(ctx) {
   ctx.tools.register({
     name: 'browser_read',
     description:
-      'Read the visible text content of the page currently open in the right Sidebar Browser tab. ' +
-      'Returns page text (usually markdown-ish via innerText), the URL and title. This reads the user\'s live session, including their logins.',
+      'Read the page open in the right Sidebar Browser tab. Returns the URL, title and page content — ' +
+      'plain visible text by default, markdown (headings, links, lists, tables, JSON-LD) with mode "markdown", ' +
+      'or the cleaned HTML with mode "html". This reads the user\'s live session, including their logins.',
     parameters: objectSchema({
       frameId: frameIdParam,
-      maxChars: intParam('maximum characters of page text to return (200–60000)'),
+      maxChars: intParam('maximum characters of page content to return (200–60000)'),
+      mode: { type: 'string', enum: ['text', 'markdown', 'html'], description: 'content shape: visible text (default), markdown, or cleaned HTML' },
     }),
     output: {
       schema: objectSchema({
@@ -640,7 +657,8 @@ export function apply(ctx) {
     timeoutMs: 30_000,
     async execute(args) {
       const maxChars = optionalInt(args.maxChars, READ_DEFAULT_MAX_CHARS, READ_MIN_MAX_CHARS, READ_HARD_MAX_CHARS)
-      const value = await call('read', { maxChars }, { frameId: requireFrameArg(args.frameId) })
+      const mode = args.mode === 'markdown' || args.mode === 'html' ? args.mode : 'text'
+      const value = await call('read', { maxChars, mode }, { frameId: requireFrameArg(args.frameId) })
       const full = typeof value?.text === 'string' ? value.text : ''
       return {
         ...(typeof value?.url === 'string' && value.url.length > 0 ? { url: value.url } : {}),
@@ -669,9 +687,8 @@ export function apply(ctx) {
       schema: objectSchema({
         url: stringParam('page URL'),
         result: stringParam('JSON-encoded evaluation result'),
-        debug: stringParam('execution-path diagnostics, when available'),
       }, ['result']),
-      render: (_args, value) => text(`Evaluate result${value?.url ? ` (${value.url})` : ''}:\n${value?.result ?? 'null'}${value?.debug ? `\n[debug] ${value.debug}` : ''}`),
+      render: (_args, value) => text(`Evaluate result${value?.url ? ` (${value.url})` : ''}:\n${value?.result ?? 'null'}`),
     },
     timeoutMs: 30_000,
     async execute(args) {
@@ -680,7 +697,6 @@ export function apply(ctx) {
       return {
         ...(typeof value?.url === 'string' && value.url.length > 0 ? { url: value.url } : {}),
         result: typeof value?.result === 'string' ? value.result : JSON.stringify(value?.result ?? null),
-        ...(value?.diag !== undefined ? { debug: JSON.stringify(value.diag) } : {}),
       }
     },
     presentCall: () => ({ card: 'generic', title: 'Evaluate in browser page', kind: 'browser' }),
@@ -689,11 +705,14 @@ export function apply(ctx) {
   ctx.tools.register({
     name: 'browser_click',
     description:
-      'Click an element in the page open in the right Sidebar Browser tab. Give a CSS selector, or visible text to search for. ' +
-      'The element is scrolled into view first. HTML and SVG elements are both supported.',
+      'Click an element in the page open in the right Sidebar Browser tab. Give a CSS selector, visible text to search for, or viewport coordinates from a screenshot. ' +
+      'When several elements match, pass index (0-based). The element is scrolled into view first. HTML and SVG elements are both supported.',
     parameters: objectSchema({
       selector: stringParam('CSS selector, e.g. "#submit" or "button.primary"'),
       text: stringParam('visible text of the element to click (used when selector is omitted or matches nothing)'),
+      index: intParam('0-based index when the selector matches more than one element'),
+      x: intParam('viewport x in CSS pixels, from a screenshot; clicks the element at that point'),
+      y: intParam('viewport y in CSS pixels, from a screenshot; clicks the element at that point'),
       frameId: frameIdParam,
     }),
     output: {
@@ -714,8 +733,14 @@ export function apply(ctx) {
     async execute(args) {
       const selector = typeof args.selector === 'string' && args.selector.trim().length > 0 ? args.selector.trim() : null
       const needle = typeof args.text === 'string' && args.text.trim().length > 0 ? args.text.trim() : null
-      if (selector === null && needle === null) throw new Error('give either selector or text')
-      const value = await call('click', { selector, text: needle }, { frameId: requireFrameArg(args.frameId) })
+      const index = Number.isInteger(args.index) && args.index >= 0 ? args.index : undefined
+      const x = Number.isFinite(args.x) ? Math.round(args.x) : undefined
+      const y = Number.isFinite(args.y) ? Math.round(args.y) : undefined
+      if (selector === null && needle === null && (x === undefined || y === undefined)) {
+        throw new Error('give a selector, text, or both x and y')
+      }
+      const value = await call('click', { selector, text: needle, index, x, y }, { frameId: requireFrameArg(args.frameId) })
+      if (typeof value?.error === 'string' && value.error.length > 0) throw new Error(value.error)
       return {
         found: value?.found === true,
         ...(value?.tag ? { tag: value.tag } : {}),
@@ -764,6 +789,7 @@ export function apply(ctx) {
         },
         { frameId: requireFrameArg(args.frameId) },
       )
+      if (typeof value?.error === 'string' && value.error.length > 0) throw new Error(value.error)
       return {
         found: value?.found === true,
         ...(value?.tag ? { tag: value.tag } : {}),
@@ -880,6 +906,61 @@ export function apply(ctx) {
       return { file, bytes: buffer.length, summary: `Screenshot saved to ${file} (${buffer.length} bytes). Read this file as an image to view it.` }
     },
     presentCall: () => ({ card: 'generic', title: 'Screenshot browser page', kind: 'browser' }),
+  })
+
+  ctx.tools.register({
+    name: 'browser_wait',
+    description:
+      'Wait until the page open in the right Sidebar Browser tab matches a condition: a CSS selector exists, ' +
+      'the URL contains a string, or the visible text contains a string. Polls until it matches or the timeout elapses. ' +
+      'Use it after browser_open, browser_click or browser_type instead of guessing how long a navigation takes.',
+    parameters: objectSchema({
+      selector: stringParam('CSS selector that must exist'),
+      urlIncludes: stringParam('substring the page URL must contain'),
+      textIncludes: stringParam('substring the visible page text must contain'),
+      timeoutMs: intParam('how long to wait in milliseconds (500–30000, default 10000)'),
+      frameId: frameIdParam,
+    }),
+    output: {
+      schema: objectSchema({
+        matched: { type: 'boolean' },
+        timedOut: { type: 'boolean' },
+        matchCount: intParam('number of elements the selector matched'),
+        url: stringParam('page URL when the wait ended'),
+        title: stringParam('page title when the wait ended'),
+        readyState: stringParam('document.readyState when the wait ended'),
+      }, ['matched']),
+      render: (_args, value) =>
+        text(
+          value?.matched
+            ? `Matched${value.url ? ` at ${value.url}` : ''}${value.title ? ` — ${value.title}` : ''}.`
+            : `Timed out${value?.url ? ` at ${value.url}` : ''}; the condition was not met.`,
+        ),
+    },
+    timeoutMs: 45_000,
+    async execute(args) {
+      const selector = typeof args.selector === 'string' && args.selector.trim().length > 0 ? args.selector.trim() : undefined
+      const urlIncludes = typeof args.urlIncludes === 'string' && args.urlIncludes.trim().length > 0 ? args.urlIncludes.trim() : undefined
+      const textIncludes = typeof args.textIncludes === 'string' && args.textIncludes.trim().length > 0 ? args.textIncludes.trim() : undefined
+      if (selector === undefined && urlIncludes === undefined && textIncludes === undefined) {
+        throw new Error('give at least one of selector, urlIncludes or textIncludes')
+      }
+      const timeoutMs = optionalInt(args.timeoutMs, 10_000, 500, 30_000)
+      const value = await call(
+        'wait',
+        { selector, urlIncludes, textIncludes, timeoutMs },
+        { frameId: requireFrameArg(args.frameId), timeoutMs: timeoutMs + 10_000 },
+      )
+      return {
+        matched: value?.matched === true,
+        ...(value?.timedOut === true ? { timedOut: true } : {}),
+        ...(Number.isFinite(value?.matchCount) ? { matchCount: Math.round(value.matchCount) } : {}),
+        ...(typeof value?.url === 'string' && value.url.length > 0 ? { url: value.url } : {}),
+        ...(typeof value?.title === 'string' && value.title.length > 0 ? { title: value.title } : {}),
+        ...(typeof value?.readyState === 'string' ? { readyState: value.readyState } : {}),
+      }
+    },
+    presentCall: () => ({ card: 'generic', title: 'Wait for browser page', kind: 'browser' }),
   })
 
   const statMtime = async (path) => {

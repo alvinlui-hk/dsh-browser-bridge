@@ -1,4 +1,4 @@
-﻿# @alvinlui-hk/dsh-browser-bridge
+# @alvinlui-hk/dsh-browser-bridge
 
 [中文](#中文) | English
 
@@ -9,14 +9,15 @@ After enabling this plugin, the agent gets `browser_*` tools that operate on the
 | Tool | What it does |
 | --- | --- |
 | `browser_status` | List the browser tabs currently open in the sidebar (frame id, URL, title, readability) |
-| `browser_open` | Open a URL in a new Sidebar Browser tab |
-| `browser_read` | Read the visible text of the page (your live session, including logged-in views) |
-| `browser_evaluate` | Run a JS expression in the page and get the JSON result |
-| `browser_click` | Click an element by CSS selector or visible text (HTML and SVG) |
-| `browser_type` | Type into an input (native input/change events), optionally press Enter |
+| `browser_open` | Open a URL in a new Sidebar Browser tab and return the new tab's frame id |
+| `browser_read` | Read the page as visible text, markdown (links, headings, tables, JSON-LD), or cleaned HTML |
+| `browser_evaluate` | Run a JS expression in the page and get the JSON result; a statement or a page exception comes back as the real error, not a generic script failure |
+| `browser_click` | Click by CSS selector, visible text, match index, or viewport coordinates from a screenshot (HTML and SVG) |
+| `browser_type` | Type into an input (native input/change events), optionally press Enter; a non-input target is an error, not a silent miss |
 | `browser_press` | Send a key to the focused element (Enter, Escape, ArrowDown, …) |
 | `browser_scroll` | Scroll up/down or jump to top/bottom |
-| `browser_screenshot` | Save a PNG of the page (Desktop app), then view it with the image tool |
+| `browser_wait` | Wait until a selector exists, the URL contains a string, or the page text contains a string |
+| `browser_screenshot` | Save a PNG of the page (Desktop app), including a background tab, then view it with the image tool |
 
 ### How it works
 
@@ -81,14 +82,15 @@ The index installs the npm package `@alvinlui-hk/dsh-browser-bridge` — no git 
 | 工具 | 功能 |
 | --- | --- |
 | `browser_status` | 列出 Sidebar 瀏覽器而家開住嘅分頁（frame id、URL、標題、可唔可以讀） |
-| `browser_open` | 喺 Sidebar 開一個新瀏覽器分頁 |
-| `browser_read` | 讀取頁面可見文字（包括你已登入嘅畫面內容） |
-| `browser_evaluate` | 喺頁面入面執行 JS 表達式，攞返 JSON 結果 |
-| `browser_click` | 用 CSS selector 或者可見文字撳頁面元素（HTML 同 SVG 都得） |
-| `browser_type` | 喺輸入框打字（會觸發原生 input/change 事件），可以順便撳 Enter |
+| `browser_open` | 喺 Sidebar 開一個新瀏覽器分頁，並回傳新分頁嘅 frame id |
+| `browser_read` | 讀取頁面：可見文字、markdown（連結、標題、表格、JSON-LD）或清理後嘅 HTML |
+| `browser_evaluate` | 喺頁面入面執行 JS 表達式，攞返 JSON 結果；statement 或頁面例外會回傳真正嘅錯誤，唔再係含糊嘅 script failure |
+| `browser_click` | 用 CSS selector、可見文字、第幾個匹配，或者截圖上嘅座標撳元素（HTML 同 SVG 都得） |
+| `browser_type` | 喺輸入框打字（會觸發原生 input/change 事件），可以順便撳 Enter；目標唔係輸入框會回傳錯誤，唔會靜靜失敗 |
 | `browser_press` | 向焦點元素發送按鍵（Enter、Escape、方向鍵等） |
 | `browser_scroll` | 上/下捲動，或者直接去頂/去底 |
-| `browser_screenshot` | 截圖儲存 PNG（桌面版），再用讀圖工具睇 |
+| `browser_wait` | 等到 selector 出現、URL 包含指定字串，或者頁面文字包含指定字串 |
+| `browser_screenshot` | 截圖儲存 PNG（桌面版），會先將分頁帶到畫面，再用讀圖工具睇 |
 
 ### 原理
 
@@ -118,6 +120,8 @@ plugin_manager install_bundle https://github.com/alvinlui-hk/dsh-browser-bridge/
 ```
 
 或者用 Code → Download ZIP 下載解壓，再用絕對路徑安裝解壓後嘅資料夾。
+
+**v2.2.0**：背景分頁都可以截圖——先聚焦，仍然離屏就短暫解除隱藏祖先並固定 webview，擷取後即時還原；`browser_evaluate` 會講出真正嘅 syntax 或頁面錯誤；`browser_open` 回傳新 frame id；新增 `browser_wait`、markdown/HTML 讀取、座標點擊同第幾個匹配。
 
 **v2.1.0 安全強化**：所有橋接路由而家行喺 DSH 平台嘅 connection 防護欄之後（Host 綁定 loopback、Origin 檢查、瀏覽器登入 cookie）— DNS rebinding、跨站調用同本機進程存取都被擋；命令 ID 改用隨機 token 防偽冒；title 通道加 per-command nonce 防頁面偽造，並保證每個命令單次執行。
 

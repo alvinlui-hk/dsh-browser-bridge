@@ -247,12 +247,6 @@ window.__ModuleLoader__.load({
           }
           const restoreTo = originalTitle
           await el.executeJavaScript(`document.title = ${JSON.stringify(restoreTo)}`, false).catch(() => {})
-          if (diag) {
-            diag.path = 'webview'
-            diag.relay = relay
-            diag.titleRawHead = typeof titleRaw === 'string' ? titleRaw.slice(0, 60) : String(titleRaw)
-            diag.decodedType = typeof decoded
-          }
           if (failure !== null) throw failure
           if (decoded === undefined) {
             throw new Error(
@@ -287,16 +281,63 @@ window.__ModuleLoader__.load({
 
     // ── page-side code builders (evaluated inside the page) ────────────────
 
-    const readCode = (maxChars) => `(async () => {
+    // HTML -> readable markdown, enough for articles and data pages: headings,
+    // links, lists, tables, and JSON-LD blocks. Not a full renderer.
+    const markdownCode = `(function () {
+  var skip = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, SVG: 1 }
+  var out = []
+  var walk = function (node) {
+    if (node.nodeType === 3) {
+      var text = (node.textContent || '').replace(/\\s+/g, ' ')
+      if (text.trim()) out.push(text)
+      return
+    }
+    if (node.nodeType !== 1 || skip[node.tagName]) return
+    var tag = node.tagName
+    if (tag === 'BR') { out.push('\\n'); return }
+    var heading = /^H([1-6])$/.exec(tag)
+    if (heading) out.push('\\n\\n' + '#'.repeat(Number(heading[1])) + ' ')
+    else if (tag === 'P' || tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE' || tag === 'LI' || tag === 'TR') out.push('\\n')
+    else if (tag === 'TD' || tag === 'TH') out.push(' | ')
+    if (tag === 'LI') out.push('- ')
+    if (tag === 'A') out.push('[')
+    if (tag === 'TABLE') out.push('\\n')
+    for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i])
+    if (tag === 'A') {
+      var href = node.getAttribute('href') || ''
+      out.push('](' + href + ')')
+    }
+    if (heading || tag === 'P' || tag === 'TR' || tag === 'TABLE') out.push('\\n')
+  }
+  if (document.body) walk(document.body)
+  var md = out.join('').replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim()
+  var ld = Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map(function (s) { return (s.textContent || '').trim() }).filter(Boolean)
+  if (ld.length) md += '\\n\\n## JSON-LD\\n\\n' + ld.map(function (b) { return '\`\`\`json\\n' + b.slice(0, 4000) + '\\n\`\`\`' }).join('\\n\\n')
+  return md
+})()`
+
+    const htmlCode = `(function () {
+  var root = document.documentElement
+  if (!root) return ''
+  var clone = root.cloneNode(true)
+  Array.from(clone.querySelectorAll('script, style, noscript, svg')).forEach(function (n) { n.remove() })
+  return clone.outerHTML
+})()`
+
+    const readCode = (maxChars, mode) => `(async () => {
   const d = document
   const body = d.body
   const full = body && typeof body.innerText === 'string' ? body.innerText : ''
   const rawTitle = d.title || ''
+  const mode = ${JSON.stringify(mode)}
+  let content = full
+  if (mode === 'markdown') content = ${markdownCode}
+  else if (mode === 'html') content = ${htmlCode}
   return {
     url: d.location ? String(d.location.href) : null,
     title: rawTitle.startsWith('__dshbb__') ? '' : rawTitle,
-    text: full.slice(0, ${maxChars}),
-    totalTextLength: full.length,
+    text: String(content == null ? '' : content).slice(0, ${maxChars}),
+    totalTextLength: String(content == null ? '' : content).length,
     readyState: d.readyState,
     scrollY: Math.round(scrollY || 0),
     scrollHeight: Math.round(((d.scrollingElement || d.documentElement) || {}).scrollHeight || 0),
@@ -304,9 +345,15 @@ window.__ModuleLoader__.load({
   }
 })()`
 
-    const clickCode = (selector, text) => `(async () => {
+    const clickCode = (selector, text, index, x, y) => `(async () => {
   let el = null
-  ${selector ? `try { el = document.querySelector(${JSON.stringify(selector)}) } catch (e) { return { found: false, error: 'invalid selector: ' + e.message } }` : ''}
+  const index = ${Number.isInteger(index) ? index : 'null'}
+  const point = ${x !== null && y !== null ? `{ x: ${x}, y: ${y} }` : 'null'}
+  if (point) {
+    el = document.elementFromPoint(point.x, point.y)
+    if (!el) return { found: false, error: 'no element at ' + point.x + ',' + point.y }
+  }
+  ${selector ? `if (!el) { try { const all = Array.from(document.querySelectorAll(${JSON.stringify(selector)})); el = index === null ? all[0] : all[index]; if (!el && index !== null) return { found: false, error: 'selector matched ' + all.length + ' element(s); index ' + index + ' is out of range' } } catch (e) { return { found: false, error: 'invalid selector: ' + e.message } } }` : ''}
   if (!el && ${JSON.stringify(text ?? null)}) {
     const needle = ${JSON.stringify((text ?? '').toLowerCase())}
     const candidates = Array.from((document.body || document).querySelectorAll('a,button,[role="button"],input[type="submit"],input[type="button"],summary,li,label,span,div,td,th,p,h1,h2,h3,h4,h5,h6'))
@@ -348,10 +395,12 @@ window.__ModuleLoader__.load({
   let el = null
   try { el = document.querySelector(${JSON.stringify(selector)}) } catch (e) { return { found: false, error: 'invalid selector: ' + e.message } }
   if (!el) return { found: false }
-  el.focus()
+  const tag = el.tagName
   const editable = el.isContentEditable === true
-  const typable = editable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !['checkbox','radio','button','submit','image','file','range'].includes(String(el.getAttribute('type') || 'text').toLowerCase()))
-  if (!typable) return { found: true, tag: el.tagName, error: 'target has no text value (use browser_evaluate for custom widgets)' }
+  const inputType = String(el.getAttribute('type') || 'text').toLowerCase()
+  const typable = editable || tag === 'TEXTAREA' || (tag === 'INPUT' && !['checkbox','radio','button','submit','reset','image','file','range','color','hidden'].includes(inputType))
+  if (!typable) return { found: false, tag: tag, error: 'target has no text value (use browser_click for buttons, browser_evaluate for custom widgets)' }
+  el.focus()
   if (editable) {
     try {
       const sel = getSelection()
@@ -378,7 +427,9 @@ window.__ModuleLoader__.load({
   el.dispatchEvent(new KeyboardEvent('keydown', keyInit))
   el.dispatchEvent(new KeyboardEvent('keypress', keyInit))
   el.dispatchEvent(new KeyboardEvent('keyup', keyInit))` : ''}
-  return { found: true, tag: el.tagName, value: (editable ? (el.textContent || '') : String(el.value || '')).slice(0, 200) }
+  const written = editable ? (el.textContent || '') : String(el.value || '')
+  if (!written.includes(${JSON.stringify(text)})) return { found: true, tag: el.tagName, error: 'typed, but the value did not change (the page may have rejected the input)' }
+  return { found: true, tag: el.tagName, value: written.slice(0, 200) }
 })()`
 
     const pressCode = (key) => `(async () => {
@@ -409,19 +460,122 @@ window.__ModuleLoader__.load({
   return { scrollY: Math.round(scrollY || 0), scrollHeight: Math.round((se && se.scrollHeight) || 0) }
 })()`
 
-    const evaluateCode = (expression) => `(async () => { return (${expression}) })()`
+    const waitCode = (selector, urlIncludes, textIncludes) => `(async () => {
+  const d = document
+  const rawTitle = d.title || ''
+  const selector = ${JSON.stringify(selector)}
+  const urlIncludes = ${JSON.stringify(urlIncludes)}
+  const textIncludes = ${JSON.stringify(textIncludes)}
+  const href = d.location ? String(d.location.href) : ''
+  const bodyText = d.body && typeof d.body.innerText === 'string' ? d.body.innerText : ''
+  let matched = 0
+  let selectorError = null
+  if (selector) {
+    try { matched = d.querySelectorAll(selector).length } catch (e) { selectorError = e && e.message ? e.message : String(e) }
+  }
+  const urlOk = !urlIncludes || href.includes(urlIncludes)
+  const textOk = !textIncludes || bodyText.includes(textIncludes)
+  const selectorOk = !selector || matched > 0
+  return {
+    matched: selector ? selectorOk && urlOk && textOk : urlOk && textOk,
+    matchCount: matched,
+    url: href || null,
+    title: rawTitle.startsWith('__dshbb__') ? '' : rawTitle,
+    readyState: d.readyState,
+    ...(selectorError ? { error: 'invalid selector: ' + selectorError } : {})
+  }
+})()`
+
+    // Compile-check first so a statement or a thrown error comes back as the
+    // page's own message instead of Electron's generic "Script failed to
+    // execute" wrapper, which hides the real reason.
+    const evaluateCode = (expression) => `(async () => {
+  try { const AsyncFn = (async function () {}).constructor; new AsyncFn('return (' + ${JSON.stringify(expression)} + ')') } catch (e) {
+    return { __dshbbError: 'expression must be a value, not a statement (' + (e && e.message ? e.message : e) + '). Wrap statements in an IIFE: (() => { ...; return value })()' }
+  }
+  try { return await (${expression}) } catch (e) {
+    return { __dshbbError: 'page threw: ' + (e && e.message ? e.message : String(e)) }
+  }
+})()`
+
+    const vizError = (error) => /UnknownVizError|ERR_ABORTED|not attached/i.test(error instanceof Error ? error.message : String(error))
 
     const screenshotFrame = async (el) => {
       if (kindOf(el) !== 'webview') {
         throw new Error('screenshot requires the desktop app: the Web build embeds pages in an iframe that cannot be captured')
       }
       if (typeof el.capturePage !== 'function') throw new Error('capturePage is not available on this webview')
-      // capturePage can hang indefinitely when the app window is minimized or
-      // fully occluded on some Electron builds — race it with a watchdog and
-      // retry once, so the model gets an actionable error instead of silence.
+      // Electron only composites a webview that has a non-zero box. A background
+      // tab can stay mounted at 0×0, and a tab from another conversation sits
+      // under a hidden sidebar (display:none), which no child style can escape.
+      // Focus it first; if it is still off-screen, lift the hidden ancestors and
+      // pin the webview for the capture, then put everything back.
+      if (!isVisible(el)) {
+        await revealFrame(el)
+      }
+      const staged = isVisible(el) ? null : stageForCapture(el)
+      try {
+        if (staged) await sleep(450)
+        return await captureVisible(el)
+      } finally {
+        staged?.restore()
+      }
+    }
+
+    // Clear display:none on the ancestor chain, hide that chain's other UI, and
+    // pin the webview over the window. position:fixed is ignored while any
+    // ancestor is display:none, so the hidden conversation sidebar has to be
+    // unhidden for the capture itself.
+    const stageForCapture = (el) => {
+      const restores = []
+      let node = el.parentElement
+      while (node) {
+        const hidden = node.hidden
+        const style = node.getAttribute('style')
+        const computed = getComputedStyle(node)
+        const needsLayout = hidden || computed.display === 'none' || computed.visibility === 'hidden' || computed.contentVisibility === 'hidden'
+        if (needsLayout) {
+          if (hidden) node.hidden = false
+          node.style.setProperty('display', computed.display === 'none' || computed.display === 'contents' ? 'block' : computed.display, 'important')
+          node.style.setProperty('visibility', 'hidden', 'important')
+          node.style.setProperty('content-visibility', 'visible', 'important')
+          restores.push(() => {
+            if (style === null) node.removeAttribute('style')
+            else node.setAttribute('style', style)
+            node.hidden = hidden
+          })
+        }
+        if (node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0 && !needsLayout) break
+        node = node.parentElement
+      }
+      const previous = el.getAttribute('style')
+      el.style.setProperty('position', 'fixed', 'important')
+      el.style.setProperty('left', '0', 'important')
+      el.style.setProperty('top', '0', 'important')
+      el.style.setProperty('width', '1280px', 'important')
+      el.style.setProperty('height', '800px', 'important')
+      el.style.setProperty('display', 'flex', 'important')
+      el.style.setProperty('visibility', 'visible', 'important')
+      el.style.setProperty('z-index', '2147483646', 'important')
+      el.style.setProperty('pointer-events', 'none', 'important')
+      return {
+        restore() {
+          if (previous === null) el.removeAttribute('style')
+          else el.setAttribute('style', previous)
+          for (const restore of restores.reverse()) restore()
+        },
+      }
+    }
+
+    const captureVisible = async (el) => {
       const capture = () => Promise.race([
-        el.capturePage(),
-        sleep(25000).then(() => { throw new Error('capturePage did not settle in 25s — keep the DeepSeek Harness window open and visible (not minimized) and retry') }),
+        el.capturePage().catch((error) => {
+          if (vizError(error)) {
+            throw new Error('capturePage failed because the tab is not on screen (Electron compositor). Switch to the tab in the right Sidebar — do not minimize the window — and retry')
+          }
+          throw error
+        }),
+        sleep(12000).then(() => { throw new Error('capturePage did not settle in 12s — keep the DeepSeek Harness window open and visible (not minimized) and retry') }),
       ])
       let image = await capture()
       if (image && typeof image.isEmpty === 'function' && image.isEmpty()) {
@@ -444,6 +598,61 @@ window.__ModuleLoader__.load({
 
     // ── command execution ──────────────────────────────────────────────────
 
+    /**
+     * The sidebar tab id owning a frame element. DSH keeps background browser
+     * webviews mounted (keepMounted) inside inactive panes, so a frame can be
+     * attached yet off-screen — and Electron refuses to capture those.
+     */
+    // The webview lives in the tab body, which DSH marks with
+    // data-sidebar-right-tab. The strip button uses data-dockkit-tab with the
+    // same id. Either is a valid focus target.
+    const tabIdOf = (el) =>
+      el.closest('[data-sidebar-right-tab]')?.getAttribute('data-sidebar-right-tab')
+      ?? el.closest('[data-dockkit-tab]')?.getAttribute('data-dockkit-tab')
+      ?? null
+
+    /**
+     * Bring a frame's sidebar tab to the front so its webview is on screen.
+     * Returns once the element reports a real box, or after a short budget.
+     */
+    const revealFrame = async (el) => {
+      const tabId = tabIdOf(el)
+      const sidebar = ctxRef.sidebarRight
+      const notes = []
+      if (sidebar && typeof sidebar.isExpanded === 'function' && sidebar.isExpanded() === false && typeof sidebar.toggleExpanded === 'function') {
+        try {
+          sidebar.toggleExpanded()
+          notes.push('expanded')
+        } catch (error) {
+          notes.push('expand-threw:' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+      if (tabId !== null && sidebar && typeof sidebar.focus === 'function') {
+        try {
+          sidebar.focus(tabId)
+          notes.push('focused')
+        } catch (error) {
+          notes.push('focus-threw:' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+      if (tabId !== null && !isVisible(el)) {
+        const strip = document.querySelector(`[data-dockkit-tab="${CSS.escape(tabId)}"]`)
+        if (strip) {
+          strip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }))
+          strip.click()
+          notes.push('clicked-strip')
+        } else {
+          notes.push('no-strip')
+        }
+      }
+      const deadline = Date.now() + 2000
+      while (Date.now() < deadline) {
+        if (isVisible(el)) return { revealed: true, notes }
+        await sleep(60)
+      }
+      return { revealed: isVisible(el), notes, tabId }
+    }
+
     const runCommand = async (command) => {
       const args = command.args ?? {}
       switch (command.action) {
@@ -453,35 +662,65 @@ window.__ModuleLoader__.load({
             throw new Error('sidebarRight service unavailable in this client build')
           }
           const target = String(args.url ?? '')
+          const before = new Set(frameElements().map((el) => frameIdOf(el)))
           await sidebar.openTab('browser', { params: { url: target } })
           let origin = null
           try { origin = new URL(target).origin } catch (e) { origin = null }
           const deadline = Date.now() + 4000
           let matched = null
-          while (Date.now() < deadline && matched === null) {
+          while (Date.now() < deadline) {
             await sleep(250)
-            const frames = describeFrames()
-            matched = frames.find((frame) => origin !== null && frame.url !== null && frame.url.startsWith(origin)) ?? null
+            const fresh = describeFrames().filter((frame) => !before.has(frame.id))
+            matched = fresh.find((frame) => origin !== null && frame.url !== null && frame.url.startsWith(origin))
+              ?? fresh.find((frame) => frame.url !== null && !frame.url.startsWith('about:'))
+              ?? null
+            if (matched !== null) break
+            if (fresh.length > 0 && Date.now() > deadline - 300) {
+              matched = fresh[fresh.length - 1]
+              break
+            }
           }
-          const note = matched
-            ? `The new frame is live at ${matched.url}. Run browser_status to get its frame id.`
-            : 'The new tab is queued; run browser_status in a moment to see it.'
-          return { summary: `Opened ${target} in a new Sidebar Browser tab. ${note}` }
+          return {
+            summary: matched
+              ? `Opened ${target} in a new Sidebar Browser tab (frame id ${matched.id}).`
+              : `Opened ${target}; the tab is queued — run browser_status in a moment for its frame id.`,
+            ...(matched ? { frameId: matched.id, url: matched.url } : {}),
+          }
         }
         case 'read': {
           const el = findFrame(command.frameId)
-          const value = await evalInFrame(el, readCode(Math.max(200, Math.min(60000, Number(args.maxChars) || 12000))))
+          const mode = args.mode === 'markdown' || args.mode === 'html' ? args.mode : 'text'
+          const value = await evalInFrame(el, readCode(Math.max(200, Math.min(60000, Number(args.maxChars) || 12000)), mode))
           return jsonSafe(value)
         }
         case 'evaluate': {
           const el = findFrame(command.frameId)
-          const diag = {}
-          const value = await evalInFrame(el, evaluateCode(String(args.expression ?? 'null')), diag)
-          return { result: jsonSafe(value), diag }
+          const expression = String(args.expression ?? 'null')
+          // Reject statements before they reach the guest: a statement makes the
+          // generated snippet fail to parse, and Electron then reports only the
+          // generic "Script failed to execute", hiding the real reason.
+          try {
+            const AsyncFunction = (async function () {}).constructor
+            new AsyncFunction('return (' + expression + ')')
+          } catch (error) {
+            throw new Error(
+              'expression must be a value, not a statement (' +
+                (error instanceof Error ? error.message : String(error)) +
+                '). Wrap statements in an IIFE: (() => { ...; return value })()',
+            )
+          }
+          const value = await evalInFrame(el, evaluateCode(expression))
+          if (value && typeof value === 'object' && typeof value.__dshbbError === 'string') {
+            throw new Error(value.__dshbbError)
+          }
+          return { result: jsonSafe(value) }
         }
         case 'click': {
           const el = findFrame(command.frameId)
-          return jsonSafe(await evalInFrame(el, clickCode(args.selector ?? null, args.text ?? null)))
+          const index = Number.isInteger(args.index) ? args.index : null
+          const x = Number.isFinite(args.x) ? Math.round(args.x) : null
+          const y = Number.isFinite(args.y) ? Math.round(args.y) : null
+          return jsonSafe(await evalInFrame(el, clickCode(args.selector ?? null, args.text ?? null, index, x, y)))
         }
         case 'type': {
           const el = findFrame(command.frameId)
@@ -498,6 +737,22 @@ window.__ModuleLoader__.load({
         case 'screenshot': {
           const el = findFrame(command.frameId)
           return { dataUrl: await screenshotFrame(el) }
+        }
+        case 'wait': {
+          const el = findFrame(command.frameId)
+          const timeoutMs = Math.max(500, Math.min(30_000, Number(args.timeoutMs) || 10_000))
+          const selector = typeof args.selector === 'string' && args.selector.length > 0 ? args.selector : null
+          const urlIncludes = typeof args.urlIncludes === 'string' && args.urlIncludes.length > 0 ? args.urlIncludes : null
+          const textIncludes = typeof args.textIncludes === 'string' && args.textIncludes.length > 0 ? args.textIncludes : null
+          const deadline = Date.now() + timeoutMs
+          let last = null
+          while (Date.now() < deadline) {
+            last = jsonSafe(await evalInFrame(el, waitCode(selector, urlIncludes, textIncludes)))
+            if (last && last.error) throw new Error(last.error)
+            if (last && last.matched === true) return { ...last, waitedMs: timeoutMs - (deadline - Date.now()) }
+            await sleep(250)
+          }
+          return { ...(last ?? {}), matched: false, timedOut: true }
         }
         default:
           throw new Error(`unknown bridge action "${command.action}"`)
@@ -569,7 +824,7 @@ window.__ModuleLoader__.load({
               let frames = []
               try {
                 frames = describeFrames()
-                await post('/browser-bridge/state', { clientId, version: 4, platform, frames })
+                await post('/browser-bridge/state', { clientId, version: 5, platform, frames })
                 const query = '/browser-bridge/poll?clientId=' + encodeURIComponent(clientId) + '&cursor=' + String(cursor)
                 const response = await fetch(query, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) })
                 if (response.ok) {
